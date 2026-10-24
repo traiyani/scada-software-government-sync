@@ -6,11 +6,11 @@ The contract is Integration Guide V1.3 (sections 3–6 and 8). This checkout doe
 
 ## How it works
 
-1. Scan `watch_folder` for `*.csv` (not recursive). A file that is still growing, or whose size or modification time changes during the stability window, is skipped until a later run. Daily filenames can change; old files can stay in the folder.
+1. Scan `watch_folder` for `*.csv` (not recursive). A file that is still growing, or whose size or modification time changes during the stability window, is skipped until a later run. Daily filenames can change; old files can stay in the folder. After a file is read in full, its size and modification time are stored in `scada_uploader.sqlite`. A later run skips that file at once while both are unchanged, so old daily files cost almost nothing and only a growing or re-exported file is read again.
 2. Map each row. `Date` + `Time` become `readingAt`, the SCADA measurement time, including rows backfilled after an outage. The clock is interpreted in `timezone` (default `Asia/Kolkata`, fixed offset `+05:30`) and written as ISO-8601, for example `2026-10-23T13:45:02+05:30`.
 3. Keep the original sensor numbers. Values are not rewritten to pass validation. A row that breaks a rule in the guide is stored as `needs_attention` and is not posted.
 4. On `--send`, POST each pending valid row. The default body is one JSON object (guide section 5, and the section 8 sample). `"payload_mode": "batch"` sends a JSON array instead (section 5, option B).
-5. Record the result in `scada_uploader.sqlite`.
+5. Record the result, and the size and modification time of each file read in full, in `scada_uploader.sqlite`.
 
 `readingAt` is not the authentication clock. `X-SCADA-Timestamp` is Unix time in seconds at the moment of the request. Section 4 rejects that header when it is more than ±5 minutes (300 seconds) from the server. The plant PC needs NTP so its clock stays inside that window.
 
@@ -62,9 +62,11 @@ The secret is not written to the log or to the dry-run summary. Restrict `config
 | `telemetry_url` | Full POST URL. Guide path: `/api/v1/public/scada/telemetry` |
 | `timezone`, `utc_offset` | How to read the SCADA clock. `Asia/Kolkata` is always `+05:30`. |
 | `payload_mode` | `single` (default) or `batch` |
+| `validate_ranges` | `true` (default) holds rows outside the section 5 bounds. `false` sends them as measured and lets the portal decide. See Validation. |
 | `batch_size` | Local cap used only in batch mode. The guide does not set a limit. |
 | `file_stable_seconds` | How long a file must sit unchanged before it is read. |
 | `database_path`, `log_path` | SQLite queue and log, next to the app by default. |
+| `ca_bundle_file` | Optional PEM file of extra trusted CA certificates, used together with the Windows store. Empty by default. See HTTPS certificates. |
 
 `Date` values use a dot as the decimal separator. A thousands comma (`12,548,750.75`) is accepted. A decimal comma is not. Ambiguous numeric dates such as `03/07/2026` are read day-first.
 
@@ -108,6 +110,8 @@ Section 5 bounds, treated as inclusive:
 
 Section 6 returns HTTP 400 when a posted value is outside those rules. The documented example is `methane_mole_percent must be >= 95.0`. A zero CH4 reading is outside 95–100, so it is stored as `needs_attention` and is not sent. Other zeros are inside the stated maxima, so they are not by themselves a reason to hold a row. `samples/SAMPLE_ONLY_two_zero_rows.csv` is fake data for local tests: two rows, every sensor at 0. Both rows are held because CH4 is 0.
 
+`"validate_ranges": false` turns off only the bounds above. Each run then logs `Range checks are OFF`, and rows held only for a bound go back to `pending` on the next run, without deleting the database. A row is still held when a column is missing, a cell is empty or not a number, or Date/Time cannot be read, because it cannot be sent as a JSON number. Rows the portal rejected with HTTP 400 stay `needs_attention`, as do `api_accepted` and `uncertain` rows. Section 6 says the portal returns HTTP 400 for out-of-range values, so with the checks off those rows are posted once and then become `needs_attention`. Setting it back to `true` holds pending out-of-range rows again before they are sent.
+
 ## Signature
 
 Section 4 and the section 8 Python sample:
@@ -120,6 +124,14 @@ Section 4 and the section 8 Python sample:
 The HMAC key is the shared secret. The message is `X-SCADA-Timestamp + "." + body`, UTF-8. `body` is the exact compact JSON that is posted (`json.dumps` separators `(',', ':')` in the guide's sample: no spaces or newlines). The signature is computed over those bytes, not over a second pretty-printed copy.
 
 Header names are sent with that exact spelling. Python 3.9's `urllib.request` would rewrite them with `str.title()` (`X-Scada-Device-Id`), so this program uses `http.client` from the standard library instead. Redirects are not followed.
+
+## HTTPS certificates
+
+The certificate is always verified. Python trusts only the root certificates already in the Windows store. Browsers and Windows can download a missing root on demand, so a site can open in a browser while this program fails with `CERTIFICATE_VERIFY_FAILED ... unable to get local issuer certificate`. Those rows stay `pending`.
+
+The portal's chain ends at `GlobalSign Root R46`. Windows downloads that root only when something first needs it, so a new plant PC may not have it. This folder includes it as `portal_ca.pem`. Copy that file next to `config.json` and set `"ca_bundle_file": "portal_ca.pem"`. The path is resolved from the config folder. The program trusts the file in addition to the Windows store, not instead of it, and does not change the Windows store. The program refuses to start if the file is missing or is not a PEM certificate. Check the SHA-256 fingerprint of a downloaded root before trusting it. For GlobalSign Root R46 it is `4F:A3:12:6D:8D:3A:11:D1:C4:85:5A:4F:80:7C:BA:D6:CF:91:9D:3A:5A:88:B0:3B:EA:2C:63:72:D9:3C:40:C9`.
+
+If antivirus or a proxy inspects HTTPS, it presents its own root instead. Export that root from the Windows certificate store as Base-64 (PEM) and use it as `ca_bundle_file`.
 
 ## Dry run and a real send
 
@@ -174,6 +186,7 @@ Copy these into one folder, for example `C:\SCADA\uploader`:
 - `dist\scada-uploader.exe`
 - `config.example.json`
 - `register_scheduled_task.ps1`
+- `portal_ca.pem`, the public `GlobalSign Root R46` certificate for the portal's HTTPS chain. It is not a secret. See [HTTPS certificates](#https-certificates).
 
 ### Create config.json
 
@@ -192,15 +205,31 @@ Set:
 - `telemetry_url` to the full portal URL, ending in `/api/v1/public/scada/telemetry`
 - `watch_folder` to the full path of the SCADA CSV export folder, such as `D:\Plant\SCADA\Export`
 
+- `ca_bundle_file` to `portal_ca.pem` if a run reports `CERTIFICATE_VERIFY_FAILED`
+
 Use a local disk path or a UNC path for `watch_folder`. A mapped drive letter often disappears when nobody is logged on. Do not put the Windows account password in `config.json`.
 
-Optional check that does not POST:
+`config.json` must be valid JSON. In Windows paths, write each backslash twice or use forward slashes: `"D:\\Plant\\SCADA\\Export"` or `"D:/Plant/SCADA/Export"`. A single backslash breaks the file. Do not put a comma after the last setting. A broken `config.json` makes the exe exit at once with code 1. Nothing is written to the log, because logging starts only after the config is read. See [Run it by hand](#run-it-by-hand) for how to see the message.
+
+### Run it by hand
+
+Always change to the install folder first. Running from another folder uses a different `config.json`, database, and log.
 
 ```bat
+cd /d C:\SCADA\uploader
 scada-uploader.exe --config config.json
+scada-uploader.exe --config config.json --send
 ```
 
-The live task adds `--send`.
+The first command is a dry run and does not POST. The second sends pending rows. The exe has no window, and Command Prompt does not wait for a windowless program, so `%ERRORLEVEL%` right after it is not the program's result. To wait, and to capture the summary or a config error:
+
+```bat
+cmd /c "scada-uploader.exe --config config.json > out.txt 2>&1"
+echo %ERRORLEVEL%
+type out.txt
+```
+
+`0` is a successful dry run, or a send run where at least one row was accepted and none were uncertain. `1` is a config error, a file error, an uncertain row, or a send run in which nothing was accepted. `2` is a refused option: `--send` with `--dry-run`, or `--send` with the placeholder URL. The full rules are under [Dry run and a real send](#dry-run-and-a-real-send).
 
 ### Register the 15-minute task
 
@@ -224,18 +253,65 @@ By default the task runs only while the current user is logged on, so registrati
 schtasks /Change /TN "SCADA Portal Upload" /RU "COMPUTER\User" /RP *
 ```
 
+To start a run now instead of waiting for the next 15-minute slot:
+
+```bat
+schtasks /Run /TN "SCADA Portal Upload"
+```
+
 ### How to see status
 
-There is no status window. Next to `config.json`:
+Command Prompt does not know PowerShell commands such as `Get-ScheduledTask`. Use `schtasks`:
+
+```bat
+schtasks /Query /TN "SCADA Portal Upload" /V /FO LIST
+```
+
+Read `Status`, `Last Run Time`, `Next Run Time`, and `Last Result`. `Last Result` is the exit code of the last run: `0`, `1`, or `2` as described above. `267009` means it is running now, `267011` means it has never run, and `267014` means it was stopped, for example at the 10-minute limit. In PowerShell, or from Command Prompt:
+
+```bat
+powershell -Command "Get-ScheduledTaskInfo -TaskName 'SCADA Portal Upload'"
+```
+
+The last lines of the log, from the install folder:
+
+```bat
+powershell -Command "Get-Content scada_uploader.log -Tail 20"
+```
+
+Each run ends with a summary. `Previous run:` gives the start, finish, mode, and exit code of the run before it. `Database:` gives the row count for each status. `Requests:` (send runs only) gives the number of POSTs, rows accepted with HTTP 202 in this run, and rows marked uncertain.
+
+Next to `config.json`:
 
 - `scada_uploader.log` records skipped files, validation holds, and each HTTP result.
 - `scada_uploader.sqlite` is the queue. Status values are `pending`, `api_accepted`, `needs_attention`, and `uncertain`. `api_accepted` means the API queued the reading (HTTP 202), not that government processing finished.
+- The `runs` table in `scada_uploader.sqlite` has one row per run: start and finish time, `dry_run` or `send`, file and row counts, and the exit code. A run that crashed has no `finished_at`.
+- Each run's log summary includes a `Previous run:` line with the last run's start, finish, mode, and exit code, or says it did not finish.
+
+If the newest log summary, or the newest `runs` row, is more than about 15 minutes old, the scheduled task has stopped running. Check Task Scheduler.
 
 ### Remove the task
 
 ```bat
 powershell -ExecutionPolicy Bypass -File .\register_scheduled_task.ps1 -Unregister
 ```
+
+### Optional dry-run test task
+
+To watch the schedule before anything is sent, create a separate task without `--send`. It uses the same `config.json`, database, and log, and it never POSTs.
+
+```bat
+schtasks /Create /TN "SCADA Uploader Dry Run" /SC MINUTE /MO 15 /TR "\"C:\SCADA\uploader\scada-uploader.exe\" --config \"C:\SCADA\uploader\config.json\""
+schtasks /Delete /TN "SCADA Uploader Dry Run" /F
+```
+
+### Troubleshooting
+
+- **Task `Last Result` is 1 and the log has no new summary.** `config.json` is probably not valid JSON: a single backslash in a path, or a comma after the last setting. Run the `cmd /c` command under [Run it by hand](#run-it-by-hand) and read `out.txt`, or paste the file into a JSON validator.
+- **`CERTIFICATE_VERIFY_FAILED ... unable to get local issuer certificate`.** Copy `portal_ca.pem` next to `config.json` and set `"ca_bundle_file": "portal_ca.pem"`. See [HTTPS certificates](#https-certificates).
+- **HTTP 401.** Check `device_id`, `shared_secret`, and the PC clock. The timestamp must be within 5 minutes of the server, so keep NTP on. Rows stay `pending` and are retried on the next run.
+- **HTTP 400.** The portal rejected the values, usually out of range. The row becomes `needs_attention` and is not sent again unless a corrected export replaces it.
+- **Rows stay `pending` with a connection error** (no network, DNS, TLS). Nothing was sent. The next run retries them.
 
 ## Still needs confirmation from the portal
 
@@ -246,6 +322,7 @@ powershell -ExecutionPolicy Bypass -File .\register_scheduled_task.ps1 -Unregist
 - No API is documented for checking that a `batchId` from HTTP 202 was eventually stored. `api_accepted` means queued only.
 - Section 5 calls `readingAt` a "UTC Timestamp", but the example is an offset timestamp (`2026-07-03T11:00:00+05:30`). The section 7 Postman script replaces `readingAt` with `new Date().toISOString()` (current UTC, with a `Z`). This program follows the section 5 example and keeps the SCADA measurement time. It does not copy the Postman script.
 - Bounds are applied as inclusive. The guide says "95.0 to 100.0" and "Max: N", and the 400 example only shows methane below 95.
+- What the first live send showed (24-Oct-2026, `validate_ranges` false): the portal returned HTTP 400 for every row outside the section 5 bounds, as section 6 says, and those rows are now `needs_attention`. It returned HTTP 202 for rows with negative moisture (about −42 to −49 mg/m³), so it appears to have no lower bound on moisture. Whether negative moisture is acceptable data still needs confirmation.
 - The table text for `slurry_FlowTotalizer_scm` says "Gas volume", which looks copied from the gas totalizers. The field name used here is the one in the JSON example.
 - Engineering units on the SCADA tags versus the units named in the guide.
 - HTTP status used when the timestamp is outside ±5 minutes. Section 4 describes the window. The 401 example in section 6 is "Invalid SCADA request signature", which may or may not be the same rejection.

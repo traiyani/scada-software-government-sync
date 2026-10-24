@@ -56,6 +56,35 @@ class MappingTests(unittest.TestCase):
         self.assertIn('"h2s_mg_m3":0', mapped.payload_json)
         self.assertNotIn('"methane_mole_percent":95', mapped.payload_json)
 
+    def test_scientific_notation_becomes_plain_decimal(self):
+        from decimal import Decimal
+
+        cases = {
+            "1.170304E+09": ("1170304000", Decimal("1170304000")),
+            "-9.259259E-03": ("-0.009259259", Decimal("-0.009259259")),
+            "5e2": ("500", Decimal("500")),
+            "+2.5E0": ("2.5", Decimal("2.5")),
+            "3.2e-1": ("0.32", Decimal("0.32")),
+        }
+        for raw, (literal, value) in cases.items():
+            with self.subTest(raw=raw):
+                number, text = parse_number(raw)
+                self.assertEqual(text, literal)
+                self.assertEqual(number, value)
+        mapped = _mapped(
+            valid_row(fresh_slurry_flow_scm_hr="-9.259259E-03", slurry_FlowTotalizer_scm="1.170304E+09")
+        )
+        self.assertEqual(mapped.status, PENDING, mapped.error)
+        self.assertIn('"fresh_slurry_flow_scm_hr":-0.009259259', mapped.payload_json)
+        self.assertIn('"slurry_FlowTotalizer_scm":1170304000', mapped.payload_json)
+        self.assertNotRegex(mapped.payload_json, r"[eE][+-]?\d|Infinity|NaN")
+
+    def test_invalid_numbers_are_still_rejected(self):
+        for raw in ["", "nan", "NaN", "inf", "-Infinity", "1e", "e5", "1.2.3E4", "1,5", "12,5E3", "1E+9999", "0x10", "05", "1.e3"]:
+            with self.subTest(raw=raw):
+                with self.assertRaises(ValueError):
+                    parse_number(raw)
+
     def test_methane_bounds_are_inclusive_and_other_zeros_are_allowed(self):
         from decimal import Decimal
 

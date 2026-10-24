@@ -13,7 +13,7 @@ from decimal import Decimal
 from scada_uploader.schema import BOUNDS, FIELD_ORDER, NUMERIC_FIELDS
 
 
-def validation_errors(values: dict[str, Decimal]) -> list[str]:
+def validation_errors(values: dict[str, Decimal], *, check_ranges: bool = True) -> list[str]:
     errors: list[str] = []
     for name in NUMERIC_FIELDS:
         if name not in values:
@@ -22,6 +22,8 @@ def validation_errors(values: dict[str, Decimal]) -> list[str]:
         number = values[name]
         if not number.is_finite():
             errors.append(f"{name} is not a finite number")
+            continue
+        if not check_ranges:
             continue
         lower, upper = BOUNDS.get(name, (None, None))
         if lower is not None and upper is not None and (number < lower or number > upper):
@@ -33,7 +35,7 @@ def validation_errors(values: dict[str, Decimal]) -> list[str]:
     return errors
 
 
-def errors_in_payload(payload: str) -> list[str]:
+def errors_in_payload(payload: str, *, check_ranges: bool = True) -> list[str]:
     """Re-check a stored object before it is placed on the wire."""
     try:
         data = json.loads(payload, parse_float=Decimal, parse_int=Decimal)
@@ -52,4 +54,4 @@ def errors_in_payload(payload: str) -> list[str]:
         if isinstance(value, bool) or not isinstance(value, Decimal):
             return [f"{name} is not a JSON number"]
         numbers[name] = value
-    return validation_errors(numbers)
+    return validation_errors(numbers, check_ranges=check_ranges)

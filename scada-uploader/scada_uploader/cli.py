@@ -6,6 +6,7 @@ import argparse
 import logging
 import sys
 import time
+from functools import partial
 from pathlib import Path
 
 from scada_uploader.config import live_send_allowed, load_config
@@ -76,22 +77,46 @@ def main(argv: list[str] | None = None) -> int:
     conn = None
     try:
         conn = store.connect(cfg.database_path)
+        previous = store.latest_run(conn)
+        run_id = store.start_run(
+            conn,
+            started_at=_now(cfg.tz),
+            mode="send" if args.send else "dry_run",
+        )
         summary = run_cycle(
             conn,
             cfg,
             send=args.send,
-            transport=post_telemetry,
+            transport=partial(post_telemetry, ca_bundle_file=cfg.ca_bundle_file),
             clock=time.time,
             sleep=time.sleep,
             requeue=args.requeue_uncertain,
         )
-        _print_summary(printer, conn, cfg, summary)
+        _print_summary(printer, conn, cfg, summary, previous)
+        code = _exit_code(args.send, summary)
+        store.finish_run(
+            conn,
+            run_id,
+            finished_at=_now(cfg.tz),
+            exit_code=code,
+            files_seen=summary.files_seen,
+            files_unchanged=summary.files_unchanged,
+            files_skipped=summary.files_skipped,
+            file_errors=len(summary.file_errors),
+            inserted=summary.inserted,
+            requests=summary.requests,
+            accepted_rows=summary.accepted_rows,
+            uncertain_rows=summary.uncertain_rows,
+        )
     finally:
         if conn is not None:
             conn.close()
         lock.close()
+    return code
 
-    if not args.send:
+
+def _exit_code(send: bool, summary) -> int:
+    if not send:
         return 0
     if summary.file_errors or summary.uncertain_rows:
         return 1
@@ -100,13 +125,23 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
-def _print_summary(printer, conn, cfg, summary) -> None:
+def _now(tzinfo) -> str:
+    from datetime import datetime
+
+    return datetime.fromtimestamp(time.time(), tzinfo).isoformat(timespec="seconds")
+
+
+def _print_summary(printer, conn, cfg, summary, previous=None) -> None:
     if summary.dry_run:
         printer("Dry run: no HTTP request was sent.")
     else:
         printer("Send mode: requests were made only for pending rows that passed local checks.")
+    printer(_previous_run_line(previous))
+    if not cfg.validate_ranges:
+        printer("Range checks are OFF (validate_ranges=false): readings are sent without local limits.")
     printer(
-        f"Files seen: {summary.files_seen}; skipped (empty or still being written): {summary.files_skipped}."
+        f"Files seen: {summary.files_seen}; unchanged since last read: {summary.files_unchanged}; "
+        f"skipped (empty or still being written): {summary.files_skipped}."
     )
     printer(
         "Queue changes: "
@@ -115,6 +150,8 @@ def _print_summary(printer, conn, cfg, summary) -> None:
     )
     if summary.requeued:
         printer(f"Requeued uncertain rows: {summary.requeued}.")
+    if summary.released:
+        printer(f"Released range-held rows to pending: {summary.released}.")
     for error in summary.file_errors:
         printer(redact_text(error, cfg.shared_secret) or error)
     counts = summary.counts
@@ -144,6 +181,17 @@ def _print_summary(printer, conn, cfg, summary) -> None:
     printer(f"Queue database: {cfg.database_path}")
 
 
+def _previous_run_line(previous) -> str:
+    if previous is None:
+        return "Previous run: none recorded."
+    if previous["finished_at"] is None:
+        return f"Previous run: started {previous['started_at']}, {previous['mode']}, did not finish."
+    return (
+        f"Previous run: started {previous['started_at']}, finished {previous['finished_at']}, "
+        f"{previous['mode']}, exit {previous['exit_code']}."
+    )
+
+
 def _print_previews(printer, previews) -> None:
     shown = previews[:3]
     for index, preview in enumerate(shown, start=1):
@@ -167,6 +215,8 @@ class _Printer:
     def __call__(self, text: str = "") -> None:
         if self.secret and self.secret in text:
             text = text.replace(self.secret, "[redacted]")
+        # The windowless exe has no stdout, so the log is the only place an operator sees this.
+        log.info("%s", text)
         print(text)
 
 

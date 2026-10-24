@@ -252,6 +252,10 @@ class QueueTests(unittest.TestCase):
             output = buffer.getvalue()
             log_text = (root / "uploader.log").read_text(encoding="utf-8")
             shown = repr(load_config(config_path))
+            logger = logging.getLogger("scada_uploader")
+            for handler in logger.handlers[:]:
+                handler.close()
+                logger.removeHandler(handler)
         self.assertEqual(code, 0)
         self.assertIn("Dry run: no HTTP request was sent.", output)
         self.assertIn("api_accepted 0 (API queued, not final storage)", output)

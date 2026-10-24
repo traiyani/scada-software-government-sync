@@ -23,6 +23,7 @@ from scada_uploader.signing import render_payload
 from scada_uploader.validate import validation_errors
 
 _JSON_NUMBER = re.compile(r"-?(?:0|[1-9]\d*)(?:\.\d+)?")
+_SCIENTIFIC = re.compile(r"-?(?:0|[1-9]\d*)(?:\.\d+)?[eE][+-]?\d{1,3}")
 _THOUSANDS = re.compile(r"^[+-]?\d{1,3}(?:,\d{3})+(?:\.\d+)?$")
 _OFFSET = re.compile(r"([+-])(\d{2}):?(\d{2})")
 
@@ -125,11 +126,14 @@ def parse_number(raw: str) -> tuple[Decimal, str]:
         text = text.replace(",", "")
     if text.startswith("+"):
         text = text[1:]
-    if not _JSON_NUMBER.fullmatch(text):
+    scientific = _SCIENTIFIC.fullmatch(text) is not None
+    if not scientific and not _JSON_NUMBER.fullmatch(text):
         raise ValueError(f"not a number: {raw!r}")
     number = Decimal(text)
     if not number.is_finite():
         raise ValueError(f"not a finite number: {raw!r}")
+    if scientific:
+        text = format(number, "f")
     return number, text
 
 

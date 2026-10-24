@@ -16,6 +16,7 @@ class FileRead:
     rows: list[MappedRow] = field(default_factory=list)
     error: str | None = None
     skipped_unstable: bool = False
+    snapshot: tuple[int, int] | None = None
 
 
 def snapshot(path: Path) -> tuple[int, int]:
@@ -165,4 +166,5 @@ def read_csv_file(path: Path, *, tzinfo, date_formats, time_formats, retries: in
         time_formats=time_formats,
     )
     parsed.path = path
+    parsed.snapshot = after
     return parsed

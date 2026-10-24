@@ -14,6 +14,7 @@ import json
 import socket
 import ssl
 from dataclasses import dataclass
+from pathlib import Path
 from urllib.parse import urlsplit
 
 import http.client
@@ -35,7 +36,22 @@ class PostResult:
     batch_id: str | None
 
 
-def post_telemetry(url: str, body: str, headers: dict[str, str], timeout: float) -> PostResult:
+def tls_context(ca_bundle_file: Path | None = None) -> ssl.SSLContext:
+    """System trust, plus an optional PEM file for a root this PC does not have."""
+    context = ssl.create_default_context()
+    if ca_bundle_file is not None:
+        context.load_verify_locations(cafile=str(ca_bundle_file))
+    return context
+
+
+def post_telemetry(
+    url: str,
+    body: str,
+    headers: dict[str, str],
+    timeout: float,
+    *,
+    ca_bundle_file: Path | None = None,
+) -> PostResult:
     parts = urlsplit(url)
     if parts.scheme not in ("https", "http"):
         return PostResult("other", None, "telemetry_url must be http or https", None)
@@ -52,7 +68,7 @@ def post_telemetry(url: str, body: str, headers: dict[str, str], timeout: float)
             host,
             port,
             timeout=timeout,
-            context=ssl.create_default_context(),
+            context=tls_context(ca_bundle_file),
         )
     else:
         connection = http.client.HTTPConnection(host, port, timeout=timeout)

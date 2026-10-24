@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import ssl
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -44,6 +45,8 @@ class Config:
     lock_path: Path
     date_formats: tuple[str, ...]
     time_formats: tuple[str, ...]
+    validate_ranges: bool = True
+    ca_bundle_file: Path | None = None
 
     def __repr__(self) -> str:
         return (
@@ -84,6 +87,9 @@ def load_config(path: Path, environ: dict[str, str] | None = None) -> Config:
     mode = str(raw.get("payload_mode") or "single").strip().lower()
     if mode not in ("single", "batch"):
         raise SystemExit("payload_mode must be 'single' or 'batch'")
+    validate_ranges = raw.get("validate_ranges", True)
+    if not isinstance(validate_ranges, bool):
+        raise SystemExit("validate_ranges must be true or false (a JSON boolean, without quotes)")
     batch_size = _positive_int(raw.get("batch_size", 20), "batch_size")
     attempts = _positive_int(raw.get("max_attempts_per_run", 3), "max_attempts_per_run")
     timeout = _positive_float(raw.get("request_timeout_seconds", 30), "request_timeout_seconds")
@@ -103,6 +109,7 @@ def load_config(path: Path, environ: dict[str, str] | None = None) -> Config:
     log_path = _resolve(base, str(raw.get("log_path") or "scada_uploader.log"))
     lock_path = _resolve(base, str(raw.get("lock_path") or "scada_uploader.lock"))
     watch_folder = _resolve(base, str(raw.get("watch_folder") or "incoming"))
+    ca_bundle_file = _ca_bundle(base, raw.get("ca_bundle_file"))
     date_formats = tuple(raw.get("date_formats") or DEFAULT_DATE_FORMATS)
     time_formats = tuple(raw.get("time_formats") or DEFAULT_TIME_FORMATS)
 
@@ -126,6 +133,8 @@ def load_config(path: Path, environ: dict[str, str] | None = None) -> Config:
         lock_path=lock_path,
         date_formats=date_formats,
         time_formats=time_formats,
+        validate_ranges=validate_ranges,
+        ca_bundle_file=ca_bundle_file,
     )
 
 
@@ -150,6 +159,23 @@ def _load_secret(raw: dict, base: Path, environ: dict[str, str]) -> str:
             raise SystemExit(f"Shared secret file not found: {secret_path}") from exc
         return text.strip()
     return str(raw.get("shared_secret") or "").strip()
+
+
+def _ca_bundle(base: Path, value) -> Path | None:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise SystemExit("ca_bundle_file must be a path string, or empty")
+    if not value.strip():
+        return None
+    path = _resolve(base, value.strip())
+    if not path.is_file():
+        raise SystemExit(f"ca_bundle_file not found: {path}")
+    try:
+        ssl.create_default_context().load_verify_locations(cafile=str(path))
+    except (ssl.SSLError, ValueError, OSError) as exc:
+        raise SystemExit(f"ca_bundle_file is not a readable PEM certificate file: {path} ({exc})") from None
+    return path
 
 
 def _resolve(base: Path, value: str) -> Path:

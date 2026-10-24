@@ -10,7 +10,7 @@ import logging
 from dataclasses import dataclass, field
 
 from scada_uploader import store
-from scada_uploader.reader import list_csv_files, read_csv_file, wait_until_stable
+from scada_uploader.reader import list_csv_files, read_csv_file, snapshot, wait_until_stable
 from scada_uploader.schema import API_ACCEPTED, NEEDS_ATTENTION, PENDING, UNCERTAIN
 from scada_uploader.signing import assemble_body, auth_headers, sign_body, unix_timestamp
 from scada_uploader.transport import redact_text
@@ -34,6 +34,7 @@ class RunSummary:
     dry_run: bool
     files_seen: int = 0
     files_skipped: int = 0
+    files_unchanged: int = 0
     inserted: int = 0
     duplicates: int = 0
     corrected: int = 0
@@ -42,6 +43,7 @@ class RunSummary:
     accepted_rows: int = 0
     uncertain_rows: int = 0
     requeued: int = 0
+    released: int = 0
     file_errors: list[str] = field(default_factory=list)
     previews: list[Preview] = field(default_factory=list)
     counts: dict[str, int] = field(default_factory=dict)
@@ -72,6 +74,13 @@ def _ingest(conn, cfg, summary: RunSummary, sleep) -> None:
     files = list_csv_files(cfg.watch_folder)
     for path in files:
         summary.files_seen += 1
+        try:
+            current = snapshot(path)
+        except OSError:
+            current = None
+        if current is not None and current == store.file_snapshot(conn, path.name):
+            summary.files_unchanged += 1
+            continue
         if not wait_until_stable(path, cfg.file_stable_seconds, sleep):
             summary.files_skipped += 1
             log.info("skipped %s (empty or still being written)", path.name)
@@ -94,13 +103,18 @@ def _ingest(conn, cfg, summary: RunSummary, sleep) -> None:
             log.error("%s", parsed.error)
             continue
         for row in parsed.rows:
+            status, error = row.status, row.error
+            if status == NEEDS_ATTENTION and not cfg.validate_ranges and not errors_in_payload(
+                row.payload_json, check_ranges=False
+            ):
+                status, error = PENDING, None
             outcome = store.upsert_reading(
                 conn,
                 reading_at=row.reading_at,
                 source_filename=path.name,
                 payload_json=row.payload_json,
-                status=row.status,
-                error=row.error,
+                status=status,
+                error=error,
             )
             if outcome == "inserted":
                 summary.inserted += 1
@@ -115,12 +129,30 @@ def _ingest(conn, cfg, summary: RunSummary, sleep) -> None:
                 )
             else:
                 summary.duplicates += 1
+        if parsed.error is None and parsed.snapshot is not None:
+            store.record_file_snapshot(conn, path.name, parsed.snapshot)
+
+
+def _release_range_holds(conn, summary: RunSummary) -> None:
+    for row in store.held_rows_not_rejected(conn):
+        if errors_in_payload(row["payload_json"], check_ranges=False):
+            continue
+        cursor = conn.execute(
+            "UPDATE readings SET status = ?, error = NULL WHERE id = ? AND status = ?",
+            (PENDING, row["id"], NEEDS_ATTENTION),
+        )
+        summary.released += cursor.rowcount
+    conn.commit()
+    if summary.released:
+        log.info("released %s range-held row(s) because validate_ranges is false", summary.released)
 
 
 def _deliver(conn, cfg, summary: RunSummary, *, send: bool, transport, clock, sleep) -> None:
+    if not cfg.validate_ranges:
+        _release_range_holds(conn, summary)
     ready = []
     for row in store.pending_rows(conn):
-        problems = errors_in_payload(row["payload_json"])
+        problems = errors_in_payload(row["payload_json"], check_ranges=cfg.validate_ranges)
         if problems:
             conn.execute(
                 "UPDATE readings SET status = ?, error = ? WHERE id = ? AND status = ?",

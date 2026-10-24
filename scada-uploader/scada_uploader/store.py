@@ -24,6 +24,26 @@ CREATE TABLE IF NOT EXISTS readings (
     batch_id TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_readings_status ON readings(status);
+CREATE TABLE IF NOT EXISTS file_snapshots (
+    filename TEXT PRIMARY KEY,
+    size INTEGER NOT NULL,
+    mtime_ns INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS runs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    started_at TEXT NOT NULL,
+    finished_at TEXT,
+    mode TEXT NOT NULL CHECK (mode IN ('dry_run', 'send')),
+    files_seen INTEGER,
+    files_unchanged INTEGER,
+    files_skipped INTEGER,
+    file_errors INTEGER,
+    inserted INTEGER,
+    requests INTEGER,
+    accepted_rows INTEGER,
+    uncertain_rows INTEGER,
+    exit_code INTEGER
+);
 """
 
 
@@ -52,7 +72,7 @@ def upsert_reading(
     A needs_attention row can be replaced when a later export corrects it.
     """
     existing = conn.execute(
-        "SELECT status, payload_json, error FROM readings WHERE reading_at = ?",
+        "SELECT status, payload_json, error, http_status FROM readings WHERE reading_at = ?",
         (reading_at,),
     ).fetchone()
     if existing is None:
@@ -68,8 +88,10 @@ def upsert_reading(
         conn.commit()
         return "inserted"
 
-    same = existing["payload_json"] == payload_json and (existing["error"] or None) == error
-    if existing["status"] == NEEDS_ATTENTION and not same:
+    same_payload = existing["payload_json"] == payload_json
+    same = same_payload and (existing["error"] or None) == error
+    rejected = existing["http_status"] == 400
+    if existing["status"] == NEEDS_ATTENTION and not same and not (rejected and same_payload):
         conn.execute(
             """
             UPDATE readings
@@ -81,7 +103,7 @@ def upsert_reading(
         )
         conn.commit()
         return "corrected"
-    if same:
+    if same_payload:
         return "duplicate"
     return "unchanged"
 
@@ -91,6 +113,19 @@ def pending_rows(conn: sqlite3.Connection) -> list[sqlite3.Row]:
         conn.execute(
             "SELECT * FROM readings WHERE status = ? ORDER BY reading_at, id",
             (PENDING,),
+        )
+    )
+
+
+def held_rows_not_rejected(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    return list(
+        conn.execute(
+            """
+            SELECT * FROM readings
+            WHERE status = ? AND COALESCE(http_status, 0) != 400
+            ORDER BY reading_at, id
+            """,
+            (NEEDS_ATTENTION,),
         )
     )
 
@@ -142,6 +177,77 @@ def status_counts(conn: sqlite3.Connection) -> dict[str, int]:
     for row in conn.execute("SELECT status, COUNT(*) AS n FROM readings GROUP BY status"):
         counts[row["status"]] = row["n"]
     return counts
+
+
+def file_snapshot(conn: sqlite3.Connection, filename: str) -> tuple[int, int] | None:
+    row = conn.execute(
+        "SELECT size, mtime_ns FROM file_snapshots WHERE filename = ?",
+        (filename,),
+    ).fetchone()
+    if row is None:
+        return None
+    return row["size"], row["mtime_ns"]
+
+
+def record_file_snapshot(conn: sqlite3.Connection, filename: str, snapshot: tuple[int, int]) -> None:
+    conn.execute(
+        "INSERT OR REPLACE INTO file_snapshots (filename, size, mtime_ns) VALUES (?, ?, ?)",
+        (filename, snapshot[0], snapshot[1]),
+    )
+    conn.commit()
+
+
+def latest_run(conn: sqlite3.Connection) -> sqlite3.Row | None:
+    return conn.execute("SELECT * FROM runs ORDER BY id DESC LIMIT 1").fetchone()
+
+
+def start_run(conn: sqlite3.Connection, *, started_at: str, mode: str) -> int:
+    cursor = conn.execute(
+        "INSERT INTO runs (started_at, mode) VALUES (?, ?)",
+        (started_at, mode),
+    )
+    conn.commit()
+    return cursor.lastrowid
+
+
+def finish_run(
+    conn: sqlite3.Connection,
+    run_id: int,
+    *,
+    finished_at: str,
+    exit_code: int,
+    files_seen: int,
+    files_unchanged: int,
+    files_skipped: int,
+    file_errors: int,
+    inserted: int,
+    requests: int,
+    accepted_rows: int,
+    uncertain_rows: int,
+) -> None:
+    conn.execute(
+        """
+        UPDATE runs
+        SET finished_at = ?, exit_code = ?, files_seen = ?, files_unchanged = ?,
+            files_skipped = ?, file_errors = ?, inserted = ?, requests = ?,
+            accepted_rows = ?, uncertain_rows = ?
+        WHERE id = ?
+        """,
+        (
+            finished_at,
+            exit_code,
+            files_seen,
+            files_unchanged,
+            files_skipped,
+            file_errors,
+            inserted,
+            requests,
+            accepted_rows,
+            uncertain_rows,
+            run_id,
+        ),
+    )
+    conn.commit()
 
 
 def get_by_reading_at(conn: sqlite3.Connection, reading_at: str) -> sqlite3.Row | None:
