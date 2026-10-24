@@ -55,7 +55,7 @@ def main(argv: list[str] | None = None) -> int:
         cfg = _replace_watch(cfg, override)
 
     printer = _Printer(cfg.shared_secret)
-    _configure_logging(cfg.log_path, cfg.shared_secret)
+    _configure_logging(dated_log_path(cfg.log_path, cfg.tz, time.time()), cfg.shared_secret)
     if not cfg.watch_folder.is_dir():
         printer(f"Watch folder does not exist: {cfg.watch_folder}")
         return 1
@@ -218,6 +218,14 @@ class _Printer:
         # The windowless exe has no stdout, so the log is the only place an operator sees this.
         log.info("%s", text)
         print(text)
+
+
+def dated_log_path(path: Path, tzinfo, now: float) -> Path:
+    """scada_uploader.log becomes scada_uploader-YYYY-MM-DD.log for the local day the run starts."""
+    from datetime import datetime
+
+    day = datetime.fromtimestamp(now, tzinfo).date().isoformat()
+    return path.with_name(f"{path.stem}-{day}{path.suffix}")
 
 
 def _configure_logging(path: Path, secret: str) -> None:

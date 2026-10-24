@@ -65,7 +65,7 @@ The secret is not written to the log or to the dry-run summary. Restrict `config
 | `validate_ranges` | `true` (default) holds rows outside the section 5 bounds. `false` sends them as measured and lets the portal decide. See Validation. |
 | `batch_size` | Local cap used only in batch mode. The guide does not set a limit. |
 | `file_stable_seconds` | How long a file must sit unchanged before it is read. |
-| `database_path`, `log_path` | SQLite queue and log, next to the app by default. |
+| `database_path`, `log_path` | SQLite queue and log, next to the app by default. Each run writes to a dated log named from `log_path`: `scada_uploader.log` becomes `scada_uploader-YYYY-MM-DD.log`, using the date in `timezone` when the run starts. |
 | `ca_bundle_file` | Optional PEM file of extra trusted CA certificates, used together with the Windows store. Empty by default. See HTTPS certificates. |
 
 `Date` values use a dot as the decimal separator. A thousands comma (`12,548,750.75`) is accepted. A decimal comma is not. Ambiguous numeric dates such as `03/07/2026` are read day-first.
@@ -163,9 +163,9 @@ python3 -m scada_uploader --config config.json --send
 
 ## Windows SCADA PC
 
-There is no status window. The scheduled task runs in the background. After each run, read `scada_uploader.log` and the queue statuses in `scada_uploader.sqlite`.
+There is no status window. The scheduled task runs in the background. After each run, read the day's log, `scada_uploader-YYYY-MM-DD.log`, and the queue statuses in `scada_uploader.sqlite`.
 
-`watch_folder`, `database_path`, and `log_path` are resolved from the folder that contains `config.json`, not from the process working directory. Set `watch_folder` to the full path of the SCADA CSV export folder. Leave `database_path` as `scada_uploader.sqlite` and `log_path` as `scada_uploader.log` so both sit next to `config.json`.
+`watch_folder`, `database_path`, and `log_path` are resolved from the folder that contains `config.json`, not from the process working directory. Set `watch_folder` to the full path of the SCADA CSV export folder. Leave `database_path` as `scada_uploader.sqlite` and `log_path` as `scada_uploader.log` so the database and the dated logs sit next to `config.json`.
 
 ### Download a ready-built exe
 
@@ -277,19 +277,19 @@ Read `Status`, `Last Run Time`, `Next Run Time`, and `Last Result`. `Last Result
 powershell -Command "Get-ScheduledTaskInfo -TaskName 'SCADA Portal Upload'"
 ```
 
-The last lines of the log, from the install folder:
+The last 20 lines of the newest log, from the install folder:
 
 ```bat
-powershell -Command "Get-Content scada_uploader.log -Tail 20"
+powershell -Command "Get-Content (Get-ChildItem scada_uploader-*.log | Sort-Object Name | Select-Object -Last 1) -Tail 20"
 ```
 
 Each run ends with a summary. `Previous run:` gives the start, finish, mode, and exit code of the run before it. `Database:` gives the row count for each status. `Requests:` (send runs only) gives the number of POSTs, rows accepted with HTTP 202 in this run, and rows marked uncertain.
 
 Next to `config.json`:
 
-- `scada_uploader.log` records skipped files, validation holds, and each HTTP result.
+- `scada_uploader-YYYY-MM-DD.log` records skipped files, validation holds, and each HTTP result. There is one file per day, and a run that passes midnight stays in the file it started in. Old logs are never deleted. Expect about 100–200 KB a day, or 35–70 MB a year. Archive or delete old files whenever you like. A `scada_uploader.log` from an older version is left as it is.
 - `scada_uploader.sqlite` is the queue. Status values are `pending`, `api_accepted`, `needs_attention`, and `uncertain`. `api_accepted` means the API queued the reading (HTTP 202), not that government processing finished. Do not delete `scada_uploader.sqlite`. It is what stops accepted readings from being sent again. Keep it when you replace the exe with a newer release.
-- The `runs` table in `scada_uploader.sqlite` has one row per run: start and finish time, `dry_run` or `send`, file and row counts, and the exit code. A run that crashed has no `finished_at`.
+- The `runs` table in `scada_uploader.sqlite` keeps the run history even after old logs are deleted. It has one row per run: start and finish time, `dry_run` or `send`, file and row counts, and the exit code. A run that crashed has no `finished_at`.
 - Each run's log summary includes a `Previous run:` line with the last run's start, finish, mode, and exit code, or says it did not finish.
 
 If the newest log summary, or the newest `runs` row, is more than about 15 minutes old, the scheduled task has stopped running. Check Task Scheduler.
@@ -311,7 +311,7 @@ schtasks /Delete /TN "SCADA Uploader Dry Run" /F
 
 ### Troubleshooting
 
-- **Task `Last Result` is 1 and the log has no new summary.** `config.json` is probably not valid JSON: a single backslash in a path, or a comma after the last setting. Run the `cmd /c` command under [Run it by hand](#run-it-by-hand) and read `out.txt`, or paste the file into a JSON validator.
+- **Task `Last Result` is 1 and the newest `scada_uploader-YYYY-MM-DD.log` has no new summary.** `config.json` is probably not valid JSON: a single backslash in a path, or a comma after the last setting. Run the `cmd /c` command under [Run it by hand](#run-it-by-hand) and read `out.txt`, or paste the file into a JSON validator.
 - **`CERTIFICATE_VERIFY_FAILED ... unable to get local issuer certificate`.** Copy `portal_ca.pem` next to `config.json` and set `"ca_bundle_file": "portal_ca.pem"`. See [HTTPS certificates](#https-certificates).
 - **HTTP 401.** Check `device_id`, `shared_secret`, and the PC clock. The timestamp must be within 5 minutes of the server, so keep NTP on. Rows stay `pending` and are retried on the next run.
 - **HTTP 400.** The portal rejected the values, usually out of range. The row becomes `needs_attention` and is not sent again unless a corrected export replaces it.
@@ -327,7 +327,7 @@ For maintainers. The exe is not committed to Git.
 3. Record the SHA-256 of the zip and the exe: `certutil -hashfile <file> SHA256`.
 4. On GitHub, open Releases, then Draft a new release. Create tag `vX.Y.Z` on `main`, upload the zip and the bare exe, paste the notes (quick start, SHA-256, source commit), and publish.
 
-Never put `config.json`, `scada_uploader.sqlite`, or the log in a release.
+Never put `config.json`, `scada_uploader.sqlite`, or any `*.log` file in a release.
 
 ## Still needs confirmation from the portal
 

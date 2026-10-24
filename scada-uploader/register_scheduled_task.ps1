@@ -90,7 +90,7 @@ $xml = @"
 <?xml version="1.0" encoding="UTF-16"?>
 <Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
   <RegistrationInfo>
-    <Description>Read SCADA CSV files and POST pending readings. No status window. See scada_uploader.log.</Description>
+    <Description>Read SCADA CSV files and POST pending readings. No status window. See scada_uploader-YYYY-MM-DD.log.</Description>
   </RegistrationInfo>
   <Triggers>
     <TimeTrigger>
@@ -156,7 +156,7 @@ Write-Host "It does not wake the PC. The PC must stay powered on."
 Write-Host "watch_folder stays in config.json. Use a full path to the CSV folder."
 Write-Host ""
 Write-Host "There is no status window. After a run, open:"
-Write-Host "  $InstallDir\scada_uploader.log"
+Write-Host "  $InstallDir\scada_uploader-YYYY-MM-DD.log (one file per day)"
 Write-Host "  $InstallDir\scada_uploader.sqlite"
 Write-Host ""
 Write-Host "To also run when nobody is logged in:"

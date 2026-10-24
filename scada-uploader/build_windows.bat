@@ -50,7 +50,7 @@ if not exist "dist\scada-uploader.exe" (
 
 echo.
 echo Build finished: %cd%\dist\scada-uploader.exe
-echo The exe has no window. Status is written to scada_uploader.log and scada_uploader.sqlite.
+echo The exe has no window. Status is written to scada_uploader-YYYY-MM-DD.log (one file per day) and scada_uploader.sqlite.
 echo.
 echo Next steps:
 echo   1. Copy dist\scada-uploader.exe, config.example.json and portal_ca.pem into one folder, for example C:\SCADA\uploader
@@ -58,7 +58,7 @@ echo      portal_ca.pem is the public GlobalSign Root R46 certificate, not a sec
 echo   2. In that folder, copy config.example.json to config.json. Set watch_folder to the full path of the SCADA CSV export folder.
 echo      Write each backslash twice in paths, for example D:\\Plant\\SCADA\\Export.
 echo      If HTTPS fails with CERTIFICATE_VERIFY_FAILED, set ca_bundle_file to portal_ca.pem.
-echo      database_path and log_path can stay as scada_uploader.sqlite and scada_uploader.log.
+echo      database_path and log_path can stay as scada_uploader.sqlite and scada_uploader.log (written as scada_uploader-YYYY-MM-DD.log).
 echo      Those paths are resolved next to the config file, not from the process working directory.
 echo   3. Copy register_scheduled_task.ps1 into that folder, or pass -InstallDir when you register.
 echo   4. Optional dry run, which does not POST, run from that folder:

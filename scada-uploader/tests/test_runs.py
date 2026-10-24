@@ -10,7 +10,7 @@ from unittest import mock
 from scada_uploader import store
 from scada_uploader.cli import main
 from scada_uploader.transport import PostResult
-from tests.helpers import valid_row, write_csv
+from tests.helpers import read_logs, valid_row, write_csv
 
 
 def write_config(root: Path) -> Path:
@@ -71,7 +71,7 @@ class RunRecordTests(unittest.TestCase):
             ):
                 second_code, second_out = run_main(["--config", str(config_path), "--send"])
             runs = all_runs(root)
-            log_text = (root / "uploader.log").read_text(encoding="utf-8")
+            log_text = read_logs(root)
         self.assertEqual(first_code, 0)
         self.assertEqual(second_code, 1)
         self.assertIn("Previous run: none recorded.", first_out)

@@ -13,7 +13,7 @@ from scada_uploader.schema import API_ACCEPTED, NEEDS_ATTENTION, PENDING, UNCERT
 from scada_uploader.signing import sign_body
 from scada_uploader.transport import PostResult
 from scada_uploader.uploader import run_cycle
-from tests.helpers import make_config, valid_row, write_csv
+from tests.helpers import make_config, read_logs, valid_row, write_csv
 
 CLOCK = lambda: 1780656091  # noqa: E731 — fixed clock, not the SCADA reading time
 
@@ -250,7 +250,7 @@ class QueueTests(unittest.TestCase):
             with redirect_stdout(buffer):
                 code = main(["--config", str(config_path)])
             output = buffer.getvalue()
-            log_text = (root / "uploader.log").read_text(encoding="utf-8")
+            log_text = read_logs(root)
             shown = repr(load_config(config_path))
             logger = logging.getLogger("scada_uploader")
             for handler in logger.handlers[:]:

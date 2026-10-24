@@ -58,6 +58,10 @@ def make_config(root: Path, **overrides) -> Config:
     return Config(**values)
 
 
+def read_logs(root: Path, stem: str = "uploader") -> str:
+    return "".join(path.read_text(encoding="utf-8") for path in sorted(root.glob(f"{stem}-*.log")))
+
+
 def write_csv(path: Path, data_rows: list[list[str]]) -> None:
     with path.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.writer(handle)
