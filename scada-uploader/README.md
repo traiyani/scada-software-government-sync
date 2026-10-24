@@ -2,7 +2,7 @@
 
 Local program for a CBG plant PC. It reads SCADA CSV exports from a folder, maps the columns onto the Unified GOBARdhan Portal telemetry JSON, signs each request, and can POST it. A SQLite file next to the program remembers every reading. Nothing is sent unless the operator passes `--send`.
 
-The contract is Integration Guide V1.3 (sections 3–6 and 8). This checkout does not include a built executable.
+The contract is Integration Guide V1.3 (sections 3–6 and 8). The Windows exe is published on [GitHub Releases](https://github.com/traiyani/scada-software-government-sync/releases/latest), not committed to this repository.
 
 ## How it works
 
@@ -165,13 +165,17 @@ python3 -m scada_uploader --config config.json --send
 
 There is no status window. The scheduled task runs in the background. After each run, read `scada_uploader.log` and the queue statuses in `scada_uploader.sqlite`.
 
-An exe has not been built in this checkout. `build_windows.bat` must be run on a 64-bit Windows machine. Python is needed only on that build machine. The plant PC can then run `scada-uploader.exe` without Python.
-
 `watch_folder`, `database_path`, and `log_path` are resolved from the folder that contains `config.json`, not from the process working directory. Set `watch_folder` to the full path of the SCADA CSV export folder. Leave `database_path` as `scada_uploader.sqlite` and `log_path` as `scada_uploader.log` so both sit next to `config.json`.
+
+### Download a ready-built exe
+
+Open [the latest release](https://github.com/traiyani/scada-software-government-sync/releases/latest) and download `scada-uploader-vX.Y.Z-windows-x64.zip`. Extract it to `C:\SCADA\uploader` so the files sit directly in that folder. It contains `scada-uploader.exe`, `config.example.json`, `portal_ca.pem`, `register_scheduled_task.ps1`, and this README. Then continue at [Create config.json](#create-configjson). The plant PC does not need Python.
+
+The exe is not code-signed, so Windows SmartScreen or antivirus may warn the first time it runs. The release notes list the SHA-256 of each file. Check a download with `certutil -hashfile scada-uploader.exe SHA256`.
 
 ### Build the exe
 
-On the Windows PC, in this folder:
+Only needed after changing the code. `build_windows.bat` must be run on a 64-bit Windows machine. Python is needed only on that build machine. On that PC, in this folder:
 
 ```bat
 build_windows.bat
@@ -181,7 +185,7 @@ The script stops if Python 3.9 or newer, 64-bit, is not on PATH. It installs PyI
 
 ### Copy the program
 
-Copy these into one folder, for example `C:\SCADA\uploader`:
+If you built the exe yourself, copy these into one folder, for example `C:\SCADA\uploader`:
 
 - `dist\scada-uploader.exe`
 - `config.example.json`
@@ -284,7 +288,7 @@ Each run ends with a summary. `Previous run:` gives the start, finish, mode, and
 Next to `config.json`:
 
 - `scada_uploader.log` records skipped files, validation holds, and each HTTP result.
-- `scada_uploader.sqlite` is the queue. Status values are `pending`, `api_accepted`, `needs_attention`, and `uncertain`. `api_accepted` means the API queued the reading (HTTP 202), not that government processing finished.
+- `scada_uploader.sqlite` is the queue. Status values are `pending`, `api_accepted`, `needs_attention`, and `uncertain`. `api_accepted` means the API queued the reading (HTTP 202), not that government processing finished. Do not delete `scada_uploader.sqlite`. It is what stops accepted readings from being sent again. Keep it when you replace the exe with a newer release.
 - The `runs` table in `scada_uploader.sqlite` has one row per run: start and finish time, `dry_run` or `send`, file and row counts, and the exit code. A run that crashed has no `finished_at`.
 - Each run's log summary includes a `Previous run:` line with the last run's start, finish, mode, and exit code, or says it did not finish.
 
@@ -312,6 +316,18 @@ schtasks /Delete /TN "SCADA Uploader Dry Run" /F
 - **HTTP 401.** Check `device_id`, `shared_secret`, and the PC clock. The timestamp must be within 5 minutes of the server, so keep NTP on. Rows stay `pending` and are retried on the next run.
 - **HTTP 400.** The portal rejected the values, usually out of range. The row becomes `needs_attention` and is not sent again unless a corrected export replaces it.
 - **Rows stay `pending` with a connection error** (no network, DNS, TLS). Nothing was sent. The next run retries them.
+- **Do not delete `scada_uploader.sqlite` to fix a problem.** It records which readings the portal already accepted. Without it, every CSV in `watch_folder` is read again and those readings are posted again.
+
+### Making a new release
+
+For maintainers. The exe is not committed to Git.
+
+1. Commit and push the change to `main`. Run `python -m unittest discover -s tests -t .`, then `build_windows.bat`.
+2. Make a folder `scada-uploader-vX.Y.Z` with `dist\scada-uploader.exe`, `config.example.json`, `portal_ca.pem`, `register_scheduled_task.ps1`, and `README.md`. Zip that folder as `scada-uploader-vX.Y.Z-windows-x64.zip`.
+3. Record the SHA-256 of the zip and the exe: `certutil -hashfile <file> SHA256`.
+4. On GitHub, open Releases, then Draft a new release. Create tag `vX.Y.Z` on `main`, upload the zip and the bare exe, paste the notes (quick start, SHA-256, source commit), and publish.
+
+Never put `config.json`, `scada_uploader.sqlite`, or the log in a release.
 
 ## Still needs confirmation from the portal
 
