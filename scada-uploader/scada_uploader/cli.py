@@ -13,7 +13,7 @@ from scada_uploader import __version__
 from scada_uploader.config import live_send_allowed, load_config
 from scada_uploader.locking import acquire
 from scada_uploader.transport import post_telemetry, redact_text
-from scada_uploader.uploader import attention_samples, run_cycle
+from scada_uploader.uploader import attention_rows, run_cycle
 
 log = logging.getLogger("scada_uploader")
 
@@ -44,12 +44,22 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="Override the watch folder for this run.",
     )
+    parser.add_argument(
+        "--list-attention",
+        action="store_true",
+        help="Print every needs_attention row and exit. Reads the database only; no CSVs, no sending.",
+    )
     args = parser.parse_args(argv)
     if args.send and args.dry_run:
         print("Choose either --send or --dry-run, not both.", file=sys.stderr)
         return 2
+    if args.list_attention and (args.send or args.requeue_uncertain):
+        print("--list-attention cannot be combined with --send or --requeue-uncertain.", file=sys.stderr)
+        return 2
 
     cfg = load_config(Path(args.config))
+    if args.list_attention:
+        return _list_attention(cfg)
     if args.watch_folder:
         override = Path(args.watch_folder)
         if not override.is_absolute():
@@ -117,6 +127,27 @@ def main(argv: list[str] | None = None) -> int:
     return code
 
 
+def _list_attention(cfg) -> int:
+    from scada_uploader import store
+
+    if sys.stdout is not None and hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(errors="replace")
+    if not cfg.database_path.is_file():
+        print(f"Needs attention: 0 total. No queue database yet at {cfg.database_path}.")
+        return 0
+    conn = store.connect_read_only(cfg.database_path)
+    try:
+        rows = attention_rows(conn)
+    finally:
+        conn.close()
+    for row in rows:
+        source = "http=400" if row["http_status"] == 400 else "local"
+        reason = redact_text(row["error"] or "", cfg.shared_secret)
+        print(f"{row['reading_at']} | {source} | {row['source_filename']} | {reason}")
+    print(f"Needs attention: {len(rows)} total.")
+    return 0
+
+
 def _exit_code(send: bool, summary) -> int:
     if not send:
         return 0
@@ -176,11 +207,12 @@ def _print_summary(printer, conn, cfg, summary, previous=None) -> None:
             f"Requests: {summary.requests}; rows API-accepted this run: {summary.accepted_rows}; "
             f"rows marked uncertain: {summary.uncertain_rows}."
         )
-    held = attention_samples(conn)
-    if held:
-        printer("Needs attention (not sent):")
-        for reading_at, error in held:
-            printer(f"  {reading_at}: {redact_text(error, cfg.shared_secret) or error}")
+    total = counts.get("needs_attention", 0)
+    if total:
+        printer(
+            f"Needs attention: {total} total, {summary.new_attention} new this run "
+            "(full list: scada-uploader.exe --config config.json --list-attention)."
+        )
     printer(f"Queue database: {cfg.database_path}")
 
 

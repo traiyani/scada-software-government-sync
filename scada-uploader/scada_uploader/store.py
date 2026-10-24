@@ -57,6 +57,14 @@ def connect(path: Path) -> sqlite3.Connection:
     return conn
 
 
+def connect_read_only(path: Path) -> sqlite3.Connection:
+    """No schema changes and no writes, so it can run while a scheduled run holds the lock."""
+    conn = sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA busy_timeout=5000")
+    return conn
+
+
 def upsert_reading(
     conn: sqlite3.Connection,
     *,

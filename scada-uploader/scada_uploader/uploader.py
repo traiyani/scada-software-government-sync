@@ -44,6 +44,7 @@ class RunSummary:
     uncertain_rows: int = 0
     requeued: int = 0
     released: int = 0
+    new_attention: int = 0
     file_errors: list[str] = field(default_factory=list)
     previews: list[Preview] = field(default_factory=list)
     counts: dict[str, int] = field(default_factory=dict)
@@ -129,6 +130,9 @@ def _ingest(conn, cfg, summary: RunSummary, sleep) -> None:
                 )
             else:
                 summary.duplicates += 1
+            if outcome in ("inserted", "corrected") and status == NEEDS_ATTENTION:
+                summary.new_attention += 1
+                log.info("held reading %s: %s", row.reading_at, error)
         if parsed.error is None and parsed.snapshot is not None:
             store.record_file_snapshot(conn, path.name, parsed.snapshot)
 
@@ -159,6 +163,7 @@ def _deliver(conn, cfg, summary: RunSummary, *, send: bool, transport, clock, sl
                 (NEEDS_ATTENTION, "; ".join(problems), row["id"], PENDING),
             )
             conn.commit()
+            summary.new_attention += 1
             log.info("held reading %s: %s", row["reading_at"], "; ".join(problems))
             continue
         ready.append(row)
@@ -168,6 +173,7 @@ def _deliver(conn, cfg, summary: RunSummary, *, send: bool, transport, clock, sl
         payloads = [row["payload_json"] for row in group]
         body = assemble_body(payloads, cfg.payload_mode)
         ids = [row["id"] for row in group]
+        reading_ats = [row["reading_at"] for row in group]
         if not send:
             timestamp = unix_timestamp(clock())
             signature = sign_body(cfg.shared_secret, timestamp, body)
@@ -175,10 +181,12 @@ def _deliver(conn, cfg, summary: RunSummary, *, send: bool, transport, clock, sl
                 Preview(body, timestamp, signature, cfg.device_id, ids, cfg.telemetry_url)
             )
             continue
-        _post_group(conn, cfg, summary, body, ids, transport, clock, sleep)
+        _post_group(conn, cfg, summary, body, ids, reading_ats, transport, clock, sleep)
 
 
-def _post_group(conn, cfg, summary: RunSummary, body: str, ids: list[int], transport, clock, sleep) -> None:
+def _post_group(
+    conn, cfg, summary: RunSummary, body: str, ids: list[int], reading_ats: list[str], transport, clock, sleep
+) -> None:
     summary.requests += 1
     attempts = cfg.max_attempts_per_run
     for attempt in range(attempts):
@@ -217,6 +225,11 @@ def _post_group(conn, cfg, summary: RunSummary, body: str, ids: list[int], trans
             summary.accepted_rows += len(ids)
         elif status == UNCERTAIN:
             summary.uncertain_rows += len(ids)
+        elif status == NEEDS_ATTENTION:
+            summary.new_attention += len(ids)
+            reason = _clip(message or "no error message", 300)
+            for reading_at in reading_ats:
+                log.info("rejected by portal %s http=%s: %s", reading_at, result.http_status, reason)
         return
 
 
@@ -243,12 +256,18 @@ def _chunked(items, size: int):
         yield items[start : start + size]
 
 
-def attention_samples(conn, limit: int = 10) -> list[tuple[str, str]]:
-    rows = conn.execute(
-        """
-        SELECT reading_at, error FROM readings
-        WHERE status = ? ORDER BY reading_at LIMIT ?
-        """,
-        (NEEDS_ATTENTION, limit),
+def _clip(text: str, limit: int) -> str:
+    text = " ".join(text.split())
+    return text if len(text) <= limit else text[:limit] + "..."
+
+
+def attention_rows(conn) -> list:
+    return list(
+        conn.execute(
+            """
+            SELECT reading_at, http_status, source_filename, error FROM readings
+            WHERE status = ? ORDER BY reading_at, id
+            """,
+            (NEEDS_ATTENTION,),
+        )
     )
-    return [(row["reading_at"], row["error"] or "") for row in rows]

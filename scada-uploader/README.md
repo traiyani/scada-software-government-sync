@@ -283,11 +283,23 @@ The last 20 lines of the newest log, from the install folder:
 powershell -Command "Get-Content (Get-ChildItem scada_uploader-*.log | Sort-Object Name | Select-Object -Last 1) -Tail 20"
 ```
 
-Each run ends with a summary. `Previous run:` gives the start, finish, mode, and exit code of the run before it. `Database:` gives the row count for each status. `Requests:` (send runs only) gives the number of POSTs, rows accepted with HTTP 202 in this run, and rows marked uncertain.
+Each run ends with a summary. `Previous run:` gives the start, finish, mode, and exit code of the run before it. `Database:` gives the row count for each status. `Requests:` (send runs only) gives the number of POSTs, rows accepted with HTTP 202 in this run, and rows marked uncertain. `Needs attention: N total, M new this run` appears when rows are held. Each hold is logged once, in full, when it happens:
+
+- `held reading <readingAt>: <reason>`, for a local check, when the row is first stored or corrected.
+- `rejected by portal <readingAt> http=400: <portal message>`, after the `request rows=...` line for that POST.
+
+To list every held row, from the install folder. This only reads the database, sends nothing, and works while the scheduled task is running:
+
+```bat
+cmd /c "scada-uploader.exe --config config.json --list-attention > attention.txt 2>&1"
+type attention.txt
+```
+
+Each line is `readingAt | local or http=400 | source CSV | reason`, and the last line is the total. `--list-attention` cannot be combined with `--send` or `--requeue-uncertain` (exit 2).
 
 Next to `config.json`:
 
-- `scada_uploader-YYYY-MM-DD.log` records skipped files, validation holds, and each HTTP result. There is one file per day, and a run that passes midnight stays in the file it started in. Old logs are never deleted. Expect about 100–200 KB a day, or 35–70 MB a year. Archive or delete old files whenever you like. A `scada_uploader.log` from an older version is left as it is.
+- `scada_uploader-YYYY-MM-DD.log` records skipped files, each hold and portal rejection once, and each HTTP result. There is one file per day, and a run that passes midnight stays in the file it started in. Old logs are never deleted. Expect about 100–200 KB a day, or 35–70 MB a year. Archive or delete old files whenever you like. A `scada_uploader.log` from an older version is left as it is.
 - `scada_uploader.sqlite` is the queue. Status values are `pending`, `api_accepted`, `needs_attention`, and `uncertain`. `api_accepted` means the API queued the reading (HTTP 202), not that government processing finished. Do not delete `scada_uploader.sqlite`. It is what stops accepted readings from being sent again. Keep it when you replace the exe with a newer release.
 - The `runs` table in `scada_uploader.sqlite` keeps the run history even after old logs are deleted. It has one row per run: start and finish time, `dry_run` or `send`, file and row counts, and the exit code. A run that crashed has no `finished_at`.
 - Each run's log summary includes a `Previous run:` line with the last run's start, finish, mode, and exit code, or says it did not finish.
@@ -314,7 +326,7 @@ schtasks /Delete /TN "SCADA Uploader Dry Run" /F
 - **Task `Last Result` is 1 and the newest `scada_uploader-YYYY-MM-DD.log` has no new summary.** `config.json` is probably not valid JSON: a single backslash in a path, or a comma after the last setting. Run the `cmd /c` command under [Run it by hand](#run-it-by-hand) and read `out.txt`, or paste the file into a JSON validator.
 - **`CERTIFICATE_VERIFY_FAILED ... unable to get local issuer certificate`.** Copy `portal_ca.pem` next to `config.json` and set `"ca_bundle_file": "portal_ca.pem"`. See [HTTPS certificates](#https-certificates).
 - **HTTP 401.** Check `device_id`, `shared_secret`, and the PC clock. The timestamp must be within 5 minutes of the server, so keep NTP on. Rows stay `pending` and are retried on the next run.
-- **HTTP 400.** The portal rejected the values, usually out of range. The row becomes `needs_attention` and is not sent again unless a corrected export replaces it.
+- **HTTP 400.** The portal rejected the values, usually out of range. The log line `rejected by portal ... http=400:` gives the portal's message. The row becomes `needs_attention` and is not sent again unless a corrected export replaces it. Use `--list-attention` to see every held row; the summary shows only the count.
 - **Rows stay `pending` with a connection error** (no network, DNS, TLS). Nothing was sent. The next run retries them.
 - **Do not delete `scada_uploader.sqlite` to fix a problem.** It records which readings the portal already accepted. Without it, every CSV in `watch_folder` is read again and those readings are posted again.
 
