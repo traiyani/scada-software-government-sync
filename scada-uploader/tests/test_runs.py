@@ -59,6 +59,16 @@ def all_runs(root: Path) -> list:
 
 
 class RunRecordTests(unittest.TestCase):
+    def test_version_is_1_0_1(self):
+        from scada_uploader import __version__
+
+        self.assertEqual(__version__, "1.0.1")
+        with self.assertRaises(SystemExit) as caught:
+            with redirect_stdout(io.StringIO()) as output:
+                main(["--version"])
+        self.assertEqual(caught.exception.code, 0)
+        self.assertEqual(output.getvalue().strip(), "scada-uploader 1.0.1")
+
     def test_runs_are_recorded_and_previous_run_is_printed(self):
         with TemporaryDirectory() as tmp:
             root = Path(tmp)

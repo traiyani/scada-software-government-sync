@@ -9,6 +9,7 @@ import time
 from functools import partial
 from pathlib import Path
 
+from scada_uploader import __version__
 from scada_uploader.config import live_send_allowed, load_config
 from scada_uploader.locking import acquire
 from scada_uploader.transport import post_telemetry, redact_text
@@ -22,6 +23,7 @@ def main(argv: list[str] | None = None) -> int:
         description="Queue SCADA CSV readings and, only with --send, POST them to the portal."
     )
     parser.add_argument("--config", required=True, help="Path to config.json")
+    parser.add_argument("--version", action="version", version=f"scada-uploader {__version__}")
     parser.add_argument(
         "--send",
         action="store_true",
@@ -132,6 +134,7 @@ def _now(tzinfo) -> str:
 
 
 def _print_summary(printer, conn, cfg, summary, previous=None) -> None:
+    printer(f"scada-uploader {__version__}")
     if summary.dry_run:
         printer("Dry run: no HTTP request was sent.")
     else:

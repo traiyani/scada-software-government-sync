@@ -322,7 +322,7 @@ schtasks /Delete /TN "SCADA Uploader Dry Run" /F
 
 For maintainers. The exe is not committed to Git.
 
-1. Commit and push the change to `main`. Run `python -m unittest discover -s tests -t .`, then `build_windows.bat`.
+1. Set `scada_uploader/__version__` to the same `X.Y.Z` you are about to tag. Commit and push that commit to `main`. Run `python -m unittest discover -s tests -t .`, then `build_windows.bat`. Tag `vX.Y.Z` on this new commit. Do not put the new tag on the commit that is already `v` of the previous release.
 2. Make a folder `scada-uploader-vX.Y.Z` with `dist\scada-uploader.exe`, `config.example.json`, `portal_ca.pem`, `register_scheduled_task.ps1`, and `README.md`. Zip that folder as `scada-uploader-vX.Y.Z-windows-x64.zip`.
 3. Record the SHA-256 of the zip and the exe: `certutil -hashfile <file> SHA256`.
 4. On GitHub, open Releases, then Draft a new release. Create tag `vX.Y.Z` on `main`, upload the zip and the bare exe, paste the notes (quick start, SHA-256, source commit), and publish.
