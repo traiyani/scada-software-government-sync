@@ -1,0 +1,23 @@
+# Local config holds the plant shared secret
+config.json
+
+# Runtime files
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+*.sqlite-journal
+*.log
+*.lock
+
+incoming/*
+!incoming/.gitkeep
+
+__pycache__/
+*.py[cod]
+.venv/
+.DS_Store
+
+# PyInstaller output from build_windows.bat
+build/
+dist/
+*.spec

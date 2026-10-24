@@ -1,0 +1,19 @@
+# Plant shared secret and uploader runtime files
+scada-uploader/config.json
+scada-uploader/*.sqlite
+scada-uploader/*.sqlite-wal
+scada-uploader/*.sqlite-shm
+scada-uploader/*.sqlite-journal
+scada-uploader/*.log
+scada-uploader/*.lock
+scada-uploader/incoming/*
+!scada-uploader/incoming/.gitkeep
+
+__pycache__/
+*.py[cod]
+.venv/
+.DS_Store
+
+scada-uploader/build/
+scada-uploader/dist/
+scada-uploader/*.spec

@@ -1,0 +1,8 @@
+# No third-party packages. Python 3.9+ standard library only:
+# csv, json, sqlite3, hmac, hashlib, http.client, ssl.
+#
+# urllib.request is not used. On Python 3.9 it rewrites header names with
+# str.title(), which would send X-Scada-Device-Id instead of the guide's
+# X-SCADA-Device-Id. http.client keeps the guide's spelling and is still
+# part of the standard library, so a later PyInstaller exe does not need
+# requests or any other HTTP library.

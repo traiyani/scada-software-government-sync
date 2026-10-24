@@ -1,0 +1,21 @@
+{
+  "watch_folder": "incoming",
+  "device_id": "YOUR_DEVICE_ID",
+  "shared_secret": "YOUR_SHARED_SECRET",
+  "shared_secret_file": "",
+  "telemetry_url": "https://YOUR_PORTAL_HOST.example.invalid/api/v1/public/scada/telemetry",
+  "timezone": "Asia/Kolkata",
+  "utc_offset": "+05:30",
+  "payload_mode": "single",
+  "batch_size": 20,
+  "max_attempts_per_run": 3,
+  "request_timeout_seconds": 30,
+  "retry_backoff_seconds": 1,
+  "file_stable_seconds": 1,
+  "file_open_retries": 3,
+  "file_open_retry_seconds": 0.5,
+  "database_path": "scada_uploader.sqlite",
+  "log_path": "scada_uploader.log",
+  "date_formats": ["%Y-%m-%d", "%d-%m-%Y", "%d/%m/%Y", "%Y/%m/%d", "%d.%m.%Y"],
+  "time_formats": ["%H:%M:%S", "%H:%M:%S.%f", "%H:%M"]
+}
