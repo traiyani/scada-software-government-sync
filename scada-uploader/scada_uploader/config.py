@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from scada_uploader.mapping import resolve_timezone
+from scada_uploader.schema import NUMERIC_FIELDS
 
 DEFAULT_DATE_FORMATS = (
     "%Y-%m-%d",
@@ -46,6 +47,7 @@ class Config:
     date_formats: tuple[str, ...]
     time_formats: tuple[str, ...]
     validate_ranges: bool = True
+    omit_fields: tuple[str, ...] = ()
     ca_bundle_file: Path | None = None
 
     def __repr__(self) -> str:
@@ -90,6 +92,7 @@ def load_config(path: Path, environ: dict[str, str] | None = None) -> Config:
     validate_ranges = raw.get("validate_ranges", True)
     if not isinstance(validate_ranges, bool):
         raise SystemExit("validate_ranges must be true or false (a JSON boolean, without quotes)")
+    omit_fields = _omit_fields(raw.get("omit_fields", []))
     batch_size = _positive_int(raw.get("batch_size", 20), "batch_size")
     attempts = _positive_int(raw.get("max_attempts_per_run", 3), "max_attempts_per_run")
     timeout = _positive_float(raw.get("request_timeout_seconds", 30), "request_timeout_seconds")
@@ -134,6 +137,7 @@ def load_config(path: Path, environ: dict[str, str] | None = None) -> Config:
         date_formats=date_formats,
         time_formats=time_formats,
         validate_ranges=validate_ranges,
+        omit_fields=omit_fields,
         ca_bundle_file=ca_bundle_file,
     )
 
@@ -159,6 +163,25 @@ def _load_secret(raw: dict, base: Path, environ: dict[str, str]) -> str:
             raise SystemExit(f"Shared secret file not found: {secret_path}") from exc
         return text.strip()
     return str(raw.get("shared_secret") or "").strip()
+
+
+def _omit_fields(value) -> tuple[str, ...]:
+    if not isinstance(value, list):
+        raise SystemExit("omit_fields must be a JSON array of field name strings")
+    names: list[str] = []
+    seen: set[str] = set()
+    for item in value:
+        if not isinstance(item, str):
+            raise SystemExit("omit_fields must be a JSON array of field name strings")
+        if item not in NUMERIC_FIELDS:
+            raise SystemExit(
+                f"omit_fields contains unknown field {item!r}; "
+                f"valid names are: {', '.join(NUMERIC_FIELDS)}"
+            )
+        if item not in seen:
+            seen.add(item)
+            names.append(item)
+    return tuple(names)
 
 
 def _ca_bundle(base: Path, value) -> Path | None:

@@ -26,18 +26,43 @@ def unix_timestamp(now_seconds: float) -> str:
     return str(int(now_seconds))
 
 
-def render_payload(reading_at: str, number_literals: Mapping[str, str]) -> str:
+def render_payload(
+    reading_at: str,
+    number_literals: Mapping[str, str],
+    omit_fields: Sequence[str] = (),
+) -> str:
     """Compact one-object body. Literals are already valid JSON numbers."""
-    missing = [name for name in NUMERIC_FIELDS if name not in number_literals]
+    omit = set(omit_fields)
+    required = [name for name in NUMERIC_FIELDS if name not in omit]
+    missing = [name for name in required if name not in number_literals]
     if missing:
         raise ValueError("missing fields: " + ", ".join(missing))
     parts = [json.dumps("readingAt") + ":" + json.dumps(reading_at)]
-    for name in NUMERIC_FIELDS:
+    for name in required:
         literal = number_literals[name]
         if not _is_json_number(literal):
             raise ValueError(f"unsafe number literal for {name}")
         parts.append(json.dumps(name) + ":" + literal)
     return "{" + ",".join(parts) + "}"
+
+
+def payload_without_fields(payload: str, omit_fields: Sequence[str]) -> str:
+    """Drop omitted keys from a stored compact object, keeping number literals."""
+    omit = set(omit_fields)
+    if not omit:
+        return payload
+    try:
+        data = json.loads(payload)
+    except json.JSONDecodeError:
+        return payload
+    if not isinstance(data, dict) or not isinstance(data.get("readingAt"), str):
+        return payload
+    literals = {}
+    for name in NUMERIC_FIELDS:
+        if name in omit or name not in data:
+            continue
+        literals[name] = _compact_number_literal(payload, name)
+    return render_payload(data["readingAt"], literals, omit_fields=omit_fields)
 
 
 def assemble_body(object_payloads: Sequence[str], mode: str) -> str:
@@ -71,6 +96,18 @@ def auth_headers(device_id: str, timestamp: str, signature: str) -> dict[str, st
         HEADER_SIGNATURE: signature,
         "Content-Type": CONTENT_TYPE,
     }
+
+
+def _compact_number_literal(payload: str, name: str) -> str:
+    key = json.dumps(name) + ":"
+    start = payload.find(key)
+    if start < 0:
+        raise ValueError(f"missing {name}")
+    start += len(key)
+    end = start
+    while end < len(payload) and payload[end] not in ",}":
+        end += 1
+    return payload[start:end]
 
 
 def _is_json_number(literal: str) -> bool:

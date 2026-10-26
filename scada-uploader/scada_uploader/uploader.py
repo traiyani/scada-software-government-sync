@@ -6,13 +6,15 @@ from the command line. Configuration cannot turn it on.
 
 from __future__ import annotations
 
+import json
 import logging
 from dataclasses import dataclass, field
 
 from scada_uploader import store
+from scada_uploader.mapping import map_row, normalize_header
 from scada_uploader.reader import list_csv_files, read_csv_file, snapshot, wait_until_stable
 from scada_uploader.schema import API_ACCEPTED, NEEDS_ATTENTION, PENDING, UNCERTAIN
-from scada_uploader.signing import assemble_body, auth_headers, sign_body, unix_timestamp
+from scada_uploader.signing import assemble_body, auth_headers, payload_without_fields, sign_body, unix_timestamp
 from scada_uploader.transport import redact_text
 from scada_uploader.validate import errors_in_payload
 
@@ -61,6 +63,11 @@ def run_cycle(
     requeue: bool = False,
 ) -> RunSummary:
     summary = RunSummary(dry_run=not send)
+    if cfg.omit_fields:
+        log.warning(
+            "omitted fields: %s (not sent; portal may still require them)",
+            ", ".join(cfg.omit_fields),
+        )
     if requeue:
         summary.requeued = store.requeue_uncertain(conn)
         log.info("requeued %s uncertain row(s)", summary.requeued)
@@ -94,6 +101,8 @@ def _ingest(conn, cfg, summary: RunSummary, sleep) -> None:
             retries=cfg.file_open_retries,
             retry_delay=cfg.file_open_retry_seconds,
             sleep=sleep,
+            omit_fields=cfg.omit_fields,
+            check_ranges=cfg.validate_ranges,
         )
         if parsed.skipped_unstable:
             summary.files_skipped += 1
@@ -105,8 +114,8 @@ def _ingest(conn, cfg, summary: RunSummary, sleep) -> None:
             continue
         for row in parsed.rows:
             status, error = row.status, row.error
-            if status == NEEDS_ATTENTION and not cfg.validate_ranges and not errors_in_payload(
-                row.payload_json, check_ranges=False
+            if status == NEEDS_ATTENTION and not errors_in_payload(
+                row.payload_json, check_ranges=cfg.validate_ranges, omit_fields=cfg.omit_fields
             ):
                 status, error = PENDING, None
             outcome = store.upsert_reading(
@@ -137,9 +146,10 @@ def _ingest(conn, cfg, summary: RunSummary, sleep) -> None:
             store.record_file_snapshot(conn, path.name, parsed.snapshot)
 
 
-def _release_range_holds(conn, summary: RunSummary) -> None:
+def _release_now_valid_holds(conn, cfg, summary: RunSummary) -> None:
     for row in store.held_rows_not_rejected(conn):
-        if errors_in_payload(row["payload_json"], check_ranges=False):
+        wire, problems = _sendable_payload(row["payload_json"], cfg)
+        if problems or wire is None:
             continue
         cursor = conn.execute(
             "UPDATE readings SET status = ?, error = NULL WHERE id = ? AND status = ?",
@@ -148,16 +158,55 @@ def _release_range_holds(conn, summary: RunSummary) -> None:
         summary.released += cursor.rowcount
     conn.commit()
     if summary.released:
-        log.info("released %s range-held row(s) because validate_ranges is false", summary.released)
+        log.info("released %s held row(s) that now pass local checks", summary.released)
+
+
+def _sendable_payload(payload: str, cfg) -> tuple[str | None, list[str]]:
+    problems = errors_in_payload(
+        payload, check_ranges=cfg.validate_ranges, omit_fields=cfg.omit_fields
+    )
+    if not problems:
+        return payload_without_fields(payload, cfg.omit_fields), []
+    remapped = _remap_source_row(payload, cfg)
+    if remapped is not None:
+        return remapped, []
+    return None, problems
+
+
+def _remap_source_row(payload: str, cfg) -> str | None:
+    try:
+        data = json.loads(payload)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(data, dict):
+        return None
+    cells = data.get("sourceRow")
+    if not isinstance(cells, dict):
+        return None
+    row_cells = {str(key): "" if value is None else str(value) for key, value in cells.items()}
+    headers = {normalize_header(key): key for key in row_cells}
+    mapped = map_row(
+        row_cells,
+        line_number=0,
+        source_name="stored",
+        tzinfo=cfg.tz,
+        date_formats=cfg.date_formats,
+        time_formats=cfg.time_formats,
+        original_headers=headers,
+        omit_fields=cfg.omit_fields,
+        check_ranges=cfg.validate_ranges,
+    )
+    if mapped.status != PENDING:
+        return None
+    return mapped.payload_json
 
 
 def _deliver(conn, cfg, summary: RunSummary, *, send: bool, transport, clock, sleep) -> None:
-    if not cfg.validate_ranges:
-        _release_range_holds(conn, summary)
+    _release_now_valid_holds(conn, cfg, summary)
     ready = []
     for row in store.pending_rows(conn):
-        problems = errors_in_payload(row["payload_json"], check_ranges=cfg.validate_ranges)
-        if problems:
+        wire, problems = _sendable_payload(row["payload_json"], cfg)
+        if problems or wire is None:
             conn.execute(
                 "UPDATE readings SET status = ?, error = ? WHERE id = ? AND status = ?",
                 (NEEDS_ATTENTION, "; ".join(problems), row["id"], PENDING),
@@ -166,14 +215,14 @@ def _deliver(conn, cfg, summary: RunSummary, *, send: bool, transport, clock, sl
             summary.new_attention += 1
             log.info("held reading %s: %s", row["reading_at"], "; ".join(problems))
             continue
-        ready.append(row)
+        ready.append((row, wire))
 
     size = 1 if cfg.payload_mode == "single" else cfg.batch_size
     for group in _chunked(ready, size):
-        payloads = [row["payload_json"] for row in group]
+        payloads = [wire for _row, wire in group]
         body = assemble_body(payloads, cfg.payload_mode)
-        ids = [row["id"] for row in group]
-        reading_ats = [row["reading_at"] for row in group]
+        ids = [row["id"] for row, _wire in group]
+        reading_ats = [row["reading_at"] for row, _wire in group]
         if not send:
             timestamp = unix_timestamp(clock())
             signature = sign_body(cfg.shared_secret, timestamp, body)

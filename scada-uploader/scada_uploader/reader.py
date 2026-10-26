@@ -75,8 +75,11 @@ def read_export_text(
     tzinfo,
     date_formats,
     time_formats,
+    omit_fields=(),
+    check_ranges: bool = True,
 ) -> FileRead:
     """Parse CSV text. `source_name` is stored only for error text here."""
+    omit = set(omit_fields)
     content: list[tuple[int, str]] = []
     for line_number, line in enumerate(text.splitlines(), start=1):
         if not line.strip():
@@ -92,7 +95,11 @@ def read_export_text(
     table = list(csv.reader(line for _, line in content))
     header_cells = [cell.strip() for cell in table[0]]
     header_norm = {normalize_header(cell): cell for cell in header_cells if cell}
-    missing = [scada for scada, _field in SCADA_COLUMNS if normalize_header(scada) not in header_norm]
+    missing = [
+        scada
+        for scada, field in SCADA_COLUMNS
+        if field not in omit and normalize_header(scada) not in header_norm
+    ]
     if "date" not in header_norm:
         missing.insert(0, "Date")
     if missing:
@@ -116,6 +123,8 @@ def read_export_text(
                 date_formats=date_formats,
                 time_formats=time_formats,
                 original_headers=header_norm,
+                omit_fields=omit,
+                check_ranges=check_ranges,
             )
         )
     return result
@@ -135,7 +144,18 @@ def list_csv_files(folder: Path) -> list[Path]:
     return sorted(found, key=lambda path: path.name.lower())
 
 
-def read_csv_file(path: Path, *, tzinfo, date_formats, time_formats, retries: int, retry_delay: float, sleep) -> FileRead:
+def read_csv_file(
+    path: Path,
+    *,
+    tzinfo,
+    date_formats,
+    time_formats,
+    retries: int,
+    retry_delay: float,
+    sleep,
+    omit_fields=(),
+    check_ranges: bool = True,
+) -> FileRead:
     try:
         before = snapshot(path)
     except OSError as exc:
@@ -164,6 +184,8 @@ def read_csv_file(path: Path, *, tzinfo, date_formats, time_formats, retries: in
         tzinfo=tzinfo,
         date_formats=date_formats,
         time_formats=time_formats,
+        omit_fields=omit_fields,
+        check_ranges=check_ranges,
     )
     parsed.path = path
     parsed.snapshot = after

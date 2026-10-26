@@ -63,6 +63,7 @@ The secret is not written to the log or to the dry-run summary. Restrict `config
 | `timezone`, `utc_offset` | How to read the SCADA clock. `Asia/Kolkata` is always `+05:30`. |
 | `payload_mode` | `single` (default) or `batch` |
 | `validate_ranges` | `true` (default) holds rows outside the section 5 bounds. `false` sends them as measured and lets the portal decide. See Validation. |
+| `omit_fields` | JSON array of telemetry field names to leave out of the POST body. Default `[]`. `readingAt` cannot be omitted. See Validation. |
 | `batch_size` | Local cap used only in batch mode. The guide does not set a limit. |
 | `file_stable_seconds` | How long a file must sit unchanged before it is read. |
 | `database_path`, `log_path` | SQLite queue and log, next to the app by default. Each run writes to a dated log named from `log_path`: `scada_uploader.log` becomes `scada_uploader-YYYY-MM-DD.log`, using the date in `timezone` when the run starts. |
@@ -93,7 +94,7 @@ There is no config flag that turns sending on. Only the `--send` command-line fl
 | PURIFIED BIOGAS ACT TOT | `purified_FlowTotalizer_scm` |
 | DISPATCH BIOGAS ACT TOT | `dispatch_flowTotalizer_kg` |
 
-Header matching ignores case and extra internal spaces. Units on the plant tags are provisional until the SCADA export's engineering units are confirmed against the guide (mg/m³, mole percent, SCM/hr, kg/hr, SCM, kg). The program does not convert units.
+Header matching ignores case and extra internal spaces. Units on the plant tags are provisional until the SCADA export's engineering units are confirmed against the guide (mg/m³, mole percent, SCM/hr, kg/hr, SCM, kg). The program does not convert units. `omit_fields` can list any of those JSON names except `readingAt`. An omitted column is not required in the CSV and is not written into the POST body.
 
 ## Validation
 
@@ -111,6 +112,8 @@ Section 5 bounds, treated as inclusive:
 Section 6 returns HTTP 400 when a posted value is outside those rules. The documented example is `methane_mole_percent must be >= 95.0`. A zero CH4 reading is outside 95–100, so it is stored as `needs_attention` and is not sent. Other zeros are inside the stated maxima, so they are not by themselves a reason to hold a row. `samples/SAMPLE_ONLY_two_zero_rows.csv` is fake data for local tests: two rows, every sensor at 0. Both rows are held because CH4 is 0.
 
 `"validate_ranges": false` turns off only the bounds above. Each run then logs `Range checks are OFF`, and rows held only for a bound go back to `pending` on the next run, without deleting the database. A row is still held when a column is missing, a cell is empty or not a number, or Date/Time cannot be read, because it cannot be sent as a JSON number. Rows the portal rejected with HTTP 400 stay `needs_attention`, as do `api_accepted` and `uncertain` rows. Section 6 says the portal returns HTTP 400 for out-of-range values, so with the checks off those rows are posted once and then become `needs_attention`. Setting it back to `true` holds pending out-of-range rows again before they are sent.
+
+`"omit_fields": ["totalSulphurIncludingH2s_mg_m3"]` leaves those fields out of the POST body and does not require them in the CSV. Range checks still apply to every field that is sent. A later run applies a changed list to stored rows without re-reading unchanged CSVs: a row held only because of an omitted field goes back to `pending`, unless the portal already returned HTTP 400. `api_accepted` and `uncertain` rows are not changed. The portal may still reject a body that is missing a field it requires; each run logs a warning when the list is not empty.
 
 ## Signature
 

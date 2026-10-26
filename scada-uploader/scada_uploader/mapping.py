@@ -146,8 +146,11 @@ def map_row(
     date_formats: Iterable[str],
     time_formats: Iterable[str],
     original_headers: Mapping[str, str],
+    omit_fields: Iterable[str] = (),
+    check_ranges: bool = True,
 ) -> MappedRow:
     """original_headers maps a normalized header to the CSV header text."""
+    omit = set(omit_fields)
 
     def cell(name: str) -> str | None:
         original = original_headers.get(normalize_header(name))
@@ -171,7 +174,8 @@ def map_row(
 
     numbers: dict[str, Decimal] = {}
     literals: dict[str, str] = {}
-    for scada_name, field in SCADA_COLUMNS:
+    required = [(scada_name, field) for scada_name, field in SCADA_COLUMNS if field not in omit]
+    for scada_name, field in required:
         raw = cell(scada_name)
         if raw is None:
             problems.append(f"missing column {scada_name}")
@@ -185,9 +189,9 @@ def map_row(
         literals[field] = literal
 
     if not problems:
-        problems.extend(validation_errors(numbers))
+        problems.extend(validation_errors(numbers, check_ranges=check_ranges, omit_fields=omit))
 
-    if reading_at.startswith("unparsed:") or len(literals) != len(SCADA_COLUMNS):
+    if reading_at.startswith("unparsed:") or any(field not in literals for _name, field in required):
         payload = json.dumps(
             {"readingAt": None if reading_at.startswith("unparsed:") else reading_at, "sourceRow": dict(cells)},
             separators=(",", ":"),
@@ -201,7 +205,7 @@ def map_row(
             line_number=line_number,
         )
 
-    payload = render_payload(reading_at, literals)
+    payload = render_payload(reading_at, literals, omit_fields=omit)
     if problems:
         return MappedRow(reading_at, payload, NEEDS_ATTENTION, "; ".join(problems), line_number)
     return MappedRow(reading_at, payload, PENDING, None, line_number)

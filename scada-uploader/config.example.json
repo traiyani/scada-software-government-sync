@@ -9,6 +9,7 @@
   "utc_offset": "+05:30",
   "payload_mode": "single",
   "validate_ranges": true,
+  "omit_fields": [],
   "batch_size": 20,
   "max_attempts_per_run": 3,
   "request_timeout_seconds": 30,
