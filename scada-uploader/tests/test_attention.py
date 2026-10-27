@@ -203,12 +203,77 @@ class AttentionCliTests(unittest.TestCase):
             with redirect_stderr(buffer):
                 with_send, _ = run_main(["--config", str(config_path), "--list-attention", "--send"])
                 with_requeue, _ = run_main(["--config", str(config_path), "--list-attention", "--requeue-uncertain"])
+                with_attention, _ = run_main(
+                    ["--config", str(config_path), "--list-attention", "--requeue-attention"]
+                )
+                missing_flag, _ = run_main(
+                    ["--config", str(config_path), "--attention-contains", "totalSulphur"]
+                )
         self.assertEqual(code, 0)
         self.assertIn("Needs attention: 0 total.", output)
         self.assertFalse(exists)
         self.assertEqual(with_send, 2)
         self.assertEqual(with_requeue, 2)
+        self.assertEqual(with_attention, 2)
+        self.assertEqual(missing_flag, 2)
         self.assertIn("cannot be combined", buffer.getvalue())
+        self.assertIn("requires --requeue-attention", buffer.getvalue())
+
+    def test_requeue_attention_all_and_filtered(self):
+        later = "2026-10-23T14:00:02+05:30"
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config_path = write_config(root)
+            write_csv(
+                root / "incoming" / "day.csv",
+                [valid_row(), valid_row(time_text="14:00:02")],
+            )
+            run_main(["--config", str(config_path)])
+            conn = store.connect(root / "queue.sqlite")
+            try:
+                conn.execute(
+                    """
+                    UPDATE readings SET status = 'needs_attention', http_status = 400,
+                    error = 'totalSulphurIncludingH2s_mg_m3 must be <= 10.0'
+                    WHERE reading_at = ?
+                    """,
+                    (LOW,),
+                )
+                conn.execute(
+                    """
+                    UPDATE readings SET status = 'needs_attention', http_status = 400,
+                    error = 'oxygen_mole_percent must be <= 0.5'
+                    WHERE reading_at = ?
+                    """,
+                    (later,),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+            filtered, out_filtered = run_main(
+                [
+                    "--config",
+                    str(config_path),
+                    "--requeue-attention",
+                    "--attention-contains",
+                    "totalSulphurIncludingH2s",
+                ]
+            )
+            conn = store.connect(root / "queue.sqlite")
+            try:
+                statuses = {
+                    row["reading_at"]: row["status"]
+                    for row in conn.execute("SELECT reading_at, status FROM readings")
+                }
+            finally:
+                conn.close()
+            all_rows, out_all = run_main(["--config", str(config_path), "--requeue-attention"])
+        self.assertEqual(filtered, 0)
+        self.assertIn("Requeued needs_attention rows: 1.", out_filtered)
+        self.assertEqual(statuses[LOW], "pending")
+        self.assertEqual(statuses[later], "needs_attention")
+        self.assertEqual(all_rows, 0)
+        self.assertIn("Requeued needs_attention rows: 1.", out_all)
 
 
 if __name__ == "__main__":

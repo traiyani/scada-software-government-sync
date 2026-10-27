@@ -180,6 +180,29 @@ def requeue_uncertain(conn: sqlite3.Connection) -> int:
     return cursor.rowcount
 
 
+def requeue_attention(conn: sqlite3.Connection, contains: str | None = None) -> int:
+    if contains:
+        cursor = conn.execute(
+            """
+            UPDATE readings
+            SET status = ?, error = ?, http_status = NULL, batch_id = NULL
+            WHERE status = ? AND IFNULL(error, '') LIKE ?
+            """,
+            (PENDING, "requeued by operator", NEEDS_ATTENTION, f"%{contains}%"),
+        )
+    else:
+        cursor = conn.execute(
+            """
+            UPDATE readings
+            SET status = ?, error = ?, http_status = NULL, batch_id = NULL
+            WHERE status = ?
+            """,
+            (PENDING, "requeued by operator", NEEDS_ATTENTION),
+        )
+    conn.commit()
+    return cursor.rowcount
+
+
 def status_counts(conn: sqlite3.Connection) -> dict[str, int]:
     counts = {PENDING: 0, API_ACCEPTED: 0, NEEDS_ATTENTION: 0, UNCERTAIN: 0}
     for row in conn.execute("SELECT status, COUNT(*) AS n FROM readings GROUP BY status"):

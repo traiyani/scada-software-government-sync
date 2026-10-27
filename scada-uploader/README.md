@@ -164,6 +164,14 @@ python3 -m scada_uploader --config config.json --send
 
 `--requeue-uncertain` alone does not POST.
 
+Held HTTP 400 rows stay `needs_attention` until an operator puts them back. The exe does this without Python:
+
+```bat
+scada-uploader.exe --config config.json --requeue-attention --attention-contains totalSulphurIncludingH2s --send
+```
+
+`--requeue-attention` alone moves every held row. `--attention-contains` limits that to errors that include the text. Neither flag POSTs unless `--send` is also set.
+
 ## Windows SCADA PC
 
 There is no status window. The scheduled task runs in the background. After each run, read the day's log, `scada_uploader-YYYY-MM-DD.log`, and the queue statuses in `scada_uploader.sqlite`.
@@ -298,7 +306,7 @@ cmd /c "scada-uploader.exe --config config.json --list-attention > attention.txt
 type attention.txt
 ```
 
-Each line is `readingAt | local or http=400 | source CSV | reason`, and the last line is the total. `--list-attention` cannot be combined with `--send` or `--requeue-uncertain` (exit 2).
+Each line is `readingAt | local or http=400 | source CSV | reason`, and the last line is the total. `--list-attention` cannot be combined with `--send`, `--requeue-uncertain`, or `--requeue-attention` (exit 2).
 
 Next to `config.json`:
 
@@ -329,7 +337,7 @@ schtasks /Delete /TN "SCADA Uploader Dry Run" /F
 - **Task `Last Result` is 1 and the newest `scada_uploader-YYYY-MM-DD.log` has no new summary.** `config.json` is probably not valid JSON: a single backslash in a path, or a comma after the last setting. Run the `cmd /c` command under [Run it by hand](#run-it-by-hand) and read `out.txt`, or paste the file into a JSON validator.
 - **`CERTIFICATE_VERIFY_FAILED ... unable to get local issuer certificate`.** Copy `portal_ca.pem` next to `config.json` and set `"ca_bundle_file": "portal_ca.pem"`. See [HTTPS certificates](#https-certificates).
 - **HTTP 401.** Check `device_id`, `shared_secret`, and the PC clock. The timestamp must be within 5 minutes of the server, so keep NTP on. Rows stay `pending` and are retried on the next run.
-- **HTTP 400.** The portal rejected the values, usually out of range. The log line `rejected by portal ... http=400:` gives the portal's message. The row becomes `needs_attention` and is not sent again unless a corrected export replaces it. Use `--list-attention` to see every held row; the summary shows only the count.
+- **HTTP 400.** The portal rejected the values, usually out of range. The log line `rejected by portal ... http=400:` gives the portal's message. The row becomes `needs_attention` and is not sent again unless a corrected export replaces it, or an operator runs `--requeue-attention` (optionally with `--attention-contains`) and `--send`. Use `--list-attention` to see every held row; the summary shows only the count.
 - **Rows stay `pending` with a connection error** (no network, DNS, TLS). Nothing was sent. The next run retries them.
 - **Do not delete `scada_uploader.sqlite` to fix a problem.** It records which readings the portal already accepted. Without it, every CSV in `watch_folder` is read again and those readings are posted again.
 

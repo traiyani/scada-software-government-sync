@@ -40,6 +40,16 @@ def main(argv: list[str] | None = None) -> int:
         help="Move uncertain rows back to pending. Does not send unless --send is also set.",
     )
     parser.add_argument(
+        "--requeue-attention",
+        action="store_true",
+        help="Move needs_attention rows back to pending. Does not send unless --send is also set.",
+    )
+    parser.add_argument(
+        "--attention-contains",
+        default=None,
+        help="With --requeue-attention, only rows whose error contains this text.",
+    )
+    parser.add_argument(
         "--watch-folder",
         default=None,
         help="Override the watch folder for this run.",
@@ -53,8 +63,14 @@ def main(argv: list[str] | None = None) -> int:
     if args.send and args.dry_run:
         print("Choose either --send or --dry-run, not both.", file=sys.stderr)
         return 2
-    if args.list_attention and (args.send or args.requeue_uncertain):
-        print("--list-attention cannot be combined with --send or --requeue-uncertain.", file=sys.stderr)
+    if args.list_attention and (args.send or args.requeue_uncertain or args.requeue_attention):
+        print(
+            "--list-attention cannot be combined with --send, --requeue-uncertain, or --requeue-attention.",
+            file=sys.stderr,
+        )
+        return 2
+    if args.attention_contains and not args.requeue_attention:
+        print("--attention-contains requires --requeue-attention.", file=sys.stderr)
         return 2
 
     cfg = load_config(Path(args.config))
@@ -103,6 +119,8 @@ def main(argv: list[str] | None = None) -> int:
             clock=time.time,
             sleep=time.sleep,
             requeue=args.requeue_uncertain,
+            requeue_attention=args.requeue_attention,
+            attention_contains=args.attention_contains,
         )
         _print_summary(printer, conn, cfg, summary, previous)
         code = _exit_code(args.send, summary)
@@ -184,6 +202,8 @@ def _print_summary(printer, conn, cfg, summary, previous=None) -> None:
     )
     if summary.requeued:
         printer(f"Requeued uncertain rows: {summary.requeued}.")
+    if summary.requeued_attention:
+        printer(f"Requeued needs_attention rows: {summary.requeued_attention}.")
     if summary.released:
         printer(f"Released range-held rows to pending: {summary.released}.")
     for error in summary.file_errors:

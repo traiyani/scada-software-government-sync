@@ -45,6 +45,7 @@ class RunSummary:
     accepted_rows: int = 0
     uncertain_rows: int = 0
     requeued: int = 0
+    requeued_attention: int = 0
     released: int = 0
     new_attention: int = 0
     file_errors: list[str] = field(default_factory=list)
@@ -61,6 +62,8 @@ def run_cycle(
     clock,
     sleep,
     requeue: bool = False,
+    requeue_attention: bool = False,
+    attention_contains: str | None = None,
 ) -> RunSummary:
     summary = RunSummary(dry_run=not send)
     if cfg.omit_fields:
@@ -71,6 +74,13 @@ def run_cycle(
     if requeue:
         summary.requeued = store.requeue_uncertain(conn)
         log.info("requeued %s uncertain row(s)", summary.requeued)
+    if requeue_attention:
+        summary.requeued_attention = store.requeue_attention(conn, attention_contains)
+        log.info(
+            "requeued %s needs_attention row(s)%s",
+            summary.requeued_attention,
+            f" matching {attention_contains!r}" if attention_contains else "",
+        )
 
     _ingest(conn, cfg, summary, sleep)
     _deliver(conn, cfg, summary, send=send, transport=transport, clock=clock, sleep=sleep)
